@@ -395,3 +395,122 @@ cd llama.cpp
 ```
 
 This gives you a weaponized Alpine setup with full GPU acceleration.
+
+1. FIRMWARE EXTRACTION (PHONE → ALPINE)
+
+```bash
+# On your rooted Xperia (Termux)
+pkg install android-tools
+su -c 'dd if=/dev/block/bootdevice/by-name/modem_a of=/sdcard/modem.img'
+su -c 'dd if=/dev/block/bootdevice/by-name/abl_a of=/sdcard/abl.img'
+
+# Extract GPU firmware specifically
+su -c 'find /vendor/firmware_mnt -name "*a660*" -exec cp {} /sdcard/gpu_fw/ \;'
+```
+
+2. CROSS-COMPILE KERNEL (USING TERMUX + CROSSTOOL-NG)
+
+```bash
+# In Termux
+pkg install git clang make ncurses-utils
+git clone https://gitlab.alpinelinux.org/alpine/linux.git
+wget https://github.com/lineageos/android_kernel_sony_sm8350/raw/lineage-21/drivers/gpu/msm/msm_drv.c
+
+# Apply your patches
+patch -p1 < msm_drv.c.patch
+
+# Build with aarch64-alpine-linux-musl toolchain
+make ARCH=arm64 CROSS_COMPILE=aarch64-alpine-linux-musl- alpine_defconfig
+make -j4 ARCH=arm64 CROSS_COMPILE=aarch64-alpine-linux-musl-
+```
+
+3. CREATE A FLASHABLE ALPINE IMAGE
+
+```bash
+# Prepare rootfs
+wget http://dl-cdn.alpinelinux.org/alpine/v3.18/releases/aarch64/alpine-minirootfs-3.18.4-aarch64.tar.gz
+mkdir alpine-root
+tar xzf alpine-minirootfs-*.tar.gz -C alpine-root/
+
+# Copy your kernel modules and firmware
+cp -r firmware/* alpine-root/lib/firmware/
+cp -r drivers/gpu/msm/ alpine-root/lib/modules/*/kernel/drivers/gpu/
+
+# Create boot.img with mkbootimg
+./mkbootimg --kernel arch/arm64/boot/Image.gz --ramdisk initramfs.cpio --output alpine-xperia.img
+```
+
+4. BOOT AND TEST
+
+```bash
+# Flash via fastboot
+fastboot flash boot alpine-xperia.img
+fastboot flash vendor_boot vendor_boot.img  # If needed
+
+# Boot and check
+dmesg | grep -i 'msm\|adreno\|gpu'
+cat /sys/kernel/debug/gpu/load
+```
+
+---
+
+DEVELOPMENT WORKFLOW:
+
+Termux + Andronix + Alpine in PRoot
+
+```bash
+pkg install proot-distro
+proot-distro install alpine
+proot-distro login alpine
+
+# Now you're in Alpine aarch64 environment
+apk add linux-virt-dev meson ninja git
+git clone https://gitlab.freedesktop.org/mesa/mesa.git
+cd mesa && meson build/ -Dgallium-drivers=freedreno
+```
+
+Use GitHub Codespaces or GitPod for Heavy Lifting
+
+· Edit code on phone in Termux
+· Push to GitHub
+· Let Codespaces compile kernels and Mesa
+· Download built artifacts back to phone
+
+---
+
+🧪 VALIDATION STEPS (PHONE EDITION):
+
+After booting your Alpine build:
+
+```bash
+# Check DRM
+ls /sys/class/drm/
+cat /sys/class/drm/card0/device/gpu_available_frequencies
+
+# Test Vulkan (if Mesa built correctly)
+vulkaninfo | grep -i adreno
+
+# Test OpenGL
+glxinfo -B | grep -i 'renderer\|opengl'
+
+# Run a simple compute test
+./clinfo --list
+```
+
+---
+
+🧰 IF YOU GET STUCK:
+
+Common issues and fixes:
+
+1. Blank screen?
+   · Check dmesg | grep -i 'dsi\|panel'
+   · Verify Sony-specific panel init sequence
+2. GPU init fails?
+   · dmesg | grep -i 'gmu\|a6xx'
+   · Ensure firmware blobs are in /lib/firmware/qcom/sm8350/
+3. Performance poor?
+   · cat /sys/kernel/debug/msm_gpu/clock
+   · Check thermal throttling: cat /sys/class/thermal/*/temp
+
+---
